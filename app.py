@@ -5,6 +5,17 @@ Lance avec : streamlit run app.py
 
 from __future__ import annotations
 
+import sys
+
+# Certains environnements d'hébergement (conteneurs Linux minimalistes, ex :
+# Streamlit Community Cloud) ne configurent pas l'UTF-8 par défaut : les flux
+# stdout/stderr héritent alors d'un encodage ASCII, ce qui fait planter tout
+# affichage de caractères accentués (noms français, texte des PDF...). On
+# force l'UTF-8 explicitement, avant tout autre import, pour éviter ça.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 import os
 import zipfile
 from io import BytesIO
