@@ -1,9 +1,10 @@
 """Logique de découpage et de renommage intelligent des PDF de publipostage.
 
 Prend un PDF contenant plusieurs attestations individuelles (issu d'un
-publipostage), identifie via Claude les bornes de pages de chaque attestation
-ainsi que le nom/prénom de la personne concernée, puis génère un PDF par
-personne nommé `NOM_Prenom_AttestationEmployeur.pdf` (ou `..._AttestationOF.pdf`).
+publipostage), identifie via Google Gemini les bornes de pages de chaque
+attestation ainsi que le nom/prénom de la personne concernée, puis génère un
+PDF par personne nommé `NOM_Prenom_AttestationEmployeur.pdf` (ou
+`..._AttestationOF.pdf`).
 """
 
 from __future__ import annotations
@@ -14,10 +15,11 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-from anthropic import Anthropic
+from google import genai
+from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
-MODEL = "claude-opus-4-8"
+MODEL = "gemini-3.5-flash"
 
 ATTESTATION_LABELS = {
     "employeur": "AttestationEmployeur",
@@ -38,28 +40,23 @@ Règles :
 - `start_page` et `end_page` sont les numéros de page tels qu'indiqués dans le texte fourni (1 = première page)."""
 
 DOCUMENTS_SCHEMA = {
-    "type": "json_schema",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "documents": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "start_page": {"type": "integer"},
-                        "end_page": {"type": "integer"},
-                        "nom": {"type": "string"},
-                        "prenom": {"type": "string"},
-                    },
-                    "required": ["start_page", "end_page", "nom", "prenom"],
-                    "additionalProperties": False,
+    "type": "object",
+    "properties": {
+        "documents": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "start_page": {"type": "integer"},
+                    "end_page": {"type": "integer"},
+                    "nom": {"type": "string"},
+                    "prenom": {"type": "string"},
                 },
-            }
-        },
-        "required": ["documents"],
-        "additionalProperties": False,
+                "required": ["start_page", "end_page", "nom", "prenom"],
+            },
+        }
     },
+    "required": ["documents"],
 }
 
 
@@ -88,7 +85,7 @@ def _build_prompt(page_texts: list[str]) -> str:
     return "\n\n".join(parts)
 
 
-def identify_documents(page_texts: list[str], client: Anthropic) -> list[ExtractedDocument]:
+def identify_documents(page_texts: list[str], client: genai.Client) -> list[ExtractedDocument]:
     if not page_texts:
         raise ProcessingError("Le PDF ne contient aucune page.")
     if not any(page_texts):
@@ -98,25 +95,40 @@ def identify_documents(page_texts: list[str], client: Anthropic) -> list[Extract
         )
 
     prompt = _build_prompt(page_texts)
-    response = client.messages.create(
+    response = client.models.generate_content(
         model=MODEL,
-        max_tokens=16000,
-        system=SYSTEM_PROMPT,
-        output_config={"format": DOCUMENTS_SCHEMA},
-        messages=[{"role": "user", "content": prompt}],
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            response_json_schema=DOCUMENTS_SCHEMA,
+            max_output_tokens=16384,
+        ),
     )
 
-    if response.stop_reason == "max_tokens":
+    text = response.text
+    if not text:
+        candidate = response.candidates[0] if response.candidates else None
+        finish_reason = getattr(candidate, "finish_reason", None)
         raise ProcessingError(
-            "La réponse de l'IA a été tronquée (trop de pages en une seule fois). "
+            f"Gemini n'a renvoyé aucune réponse exploitable (raison : {finish_reason}). "
             "Essaie de traiter le PDF en plusieurs lots plus petits."
         )
-    if response.stop_reason == "refusal":
-        raise ProcessingError("Claude a refusé de traiter ce contenu.")
 
-    text = next(b.text for b in response.content if b.type == "text")
-    data = json.loads(text)
-    documents = [ExtractedDocument(**doc) for doc in data["documents"]]
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ProcessingError(f"Réponse de l'IA illisible : {exc}") from exc
+
+    documents = [
+        ExtractedDocument(
+            start_page=doc["start_page"],
+            end_page=doc["end_page"],
+            nom=doc["nom"],
+            prenom=doc["prenom"],
+        )
+        for doc in data["documents"]
+    ]
 
     if not documents:
         raise ProcessingError("Aucune attestation n'a été identifiée dans ce PDF.")
@@ -172,7 +184,7 @@ def split_pdf(
     return results
 
 
-def process_pdf(pdf_bytes: bytes, attestation_type: str, client: Anthropic) -> list[tuple[str, bytes]]:
+def process_pdf(pdf_bytes: bytes, attestation_type: str, client: genai.Client) -> list[tuple[str, bytes]]:
     """Découpe et renomme un PDF de publipostage. `attestation_type` est 'employeur' ou 'of'."""
     page_texts = extract_page_texts(pdf_bytes)
     documents = identify_documents(page_texts, client)

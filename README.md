@@ -7,7 +7,7 @@ Tu as un PDF issu d'un publipostage (ex : 150 attestations de formation
 "travail en hauteur" générées en un seul fichier). Fusion-renomme :
 
 1. Découpe ce PDF en un fichier par personne (1 à 2 pages chacun).
-2. Identifie le nom et le prénom de chaque personne via l'IA (Claude).
+2. Identifie le nom et le prénom de chaque personne via l'IA (Google Gemini).
 3. Renomme chaque fichier : `NOM_Prenom_AttestationEmployeur.pdf` ou
    `NOM_Prenom_AttestationOF.pdf` selon le type de document déposé.
 4. Te propose de tout télécharger en `.zip`, ou fichier par fichier.
@@ -20,10 +20,14 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Il faut une clé API Anthropic (Claude) :
+Il faut une clé API Google Gemini (gratuite, sans carte bancaire) :
+
+1. Va sur https://aistudio.google.com/apikey
+2. Connecte-toi avec un compte Google, clique sur "Create API key"
+3. Configure-la :
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
+export GEMINI_API_KEY="ta-clé-ici"
 ```
 
 ## Lancer l'application

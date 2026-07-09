@@ -21,7 +21,8 @@ import zipfile
 from io import BytesIO
 
 import streamlit as st
-from anthropic import Anthropic, AnthropicError
+from google import genai
+from google.genai import errors as genai_errors
 
 from pdf_splitter import ProcessingError, process_pdf
 
@@ -33,10 +34,10 @@ st.caption(
     "par personne, renommé automatiquement NOM_Prenom_Attestation....pdf"
 )
 
-api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+api_key = os.environ.get("GEMINI_API_KEY", "")
 if not api_key:
     st.warning(
-        "⚠️ La variable d'environnement `ANTHROPIC_API_KEY` n'est pas définie. "
+        "⚠️ La variable d'environnement `GEMINI_API_KEY` n'est pas définie. "
         "Configure-la avant de traiter un PDF (voir README.md)."
     )
 
@@ -63,10 +64,10 @@ process_clicked = st.button(
 
 if process_clicked:
     if not api_key:
-        st.error("Impossible de continuer sans ANTHROPIC_API_KEY.")
+        st.error("Impossible de continuer sans GEMINI_API_KEY.")
         st.stop()
 
-    client = Anthropic()
+    client = genai.Client(api_key=api_key)
     jobs = []
     if employeur_file is not None:
         jobs.append(("employeur", employeur_file, "Attestations Employeur"))
@@ -82,8 +83,8 @@ if process_clicked:
             except ProcessingError as exc:
                 st.error(f"{label} : {exc}")
                 continue
-            except AnthropicError as exc:
-                st.error(f"{label} : erreur de l'API Claude.")
+            except genai_errors.APIError as exc:
+                st.error(f"{label} : erreur de l'API Gemini.")
                 st.exception(exc)
                 continue
             except Exception as exc:  # noqa: BLE001
