@@ -72,10 +72,12 @@ if process_clicked:
                 st.error(f"{label} : {exc}")
                 continue
             except AnthropicError as exc:
-                st.error(f"{label} : erreur de l'API Claude ({exc}).")
+                st.error(f"{label} : erreur de l'API Claude.")
+                st.exception(exc)
                 continue
             except Exception as exc:  # noqa: BLE001
-                st.error(f"{label} : erreur inattendue ({exc}).")
+                st.error(f"{label} : erreur inattendue.")
+                st.exception(exc)
                 continue
 
         st.success(f"{label} : {len(outputs)} attestation(s) générée(s).")
