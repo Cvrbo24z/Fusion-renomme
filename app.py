@@ -23,6 +23,7 @@ from io import BytesIO
 import streamlit as st
 from google import genai
 from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 
 from pdf_splitter import ProcessingError, process_pdf
 
@@ -67,7 +68,14 @@ if process_clicked:
         st.error("Impossible de continuer sans GEMINI_API_KEY.")
         st.stop()
 
-    client = genai.Client(api_key=api_key)
+    # Par défaut, la librairie Google désactive le délai d'expiration des
+    # requêtes HTTP (elle peut rester bloquée indéfiniment si le serveur
+    # Gemini est surchargé sans jamais répondre) : on fixe une limite de
+    # 60 secondes par tentative pour éviter tout blocage infini.
+    client = genai.Client(
+        api_key=api_key,
+        http_options=genai_types.HttpOptions(timeout=60_000),
+    )
     jobs = []
     if employeur_file is not None:
         jobs.append(("employeur", employeur_file, "Attestations Employeur"))

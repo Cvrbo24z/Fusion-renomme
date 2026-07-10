@@ -16,16 +16,25 @@ import time
 import unicodedata
 from dataclasses import dataclass
 
+import httpx
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
-MODEL = "gemini-3.5-flash"
+# gemini-2.5-flash est un modèle plus établi (donc moins souvent en
+# surcapacité) que les modèles "3.x" plus récents, tout en restant éligible
+# à l'offre gratuite.
+MODEL = "gemini-2.5-flash"
 
 # Délais (secondes) avant chaque nouvelle tentative en cas de surcharge
-# temporaire du serveur Gemini (erreur 503 "high demand").
+# temporaire ou de non-réponse du serveur Gemini.
 RETRY_DELAYS = (5, 15, 30)
+
+# Erreurs considérées comme transitoires (on retente), par opposition aux
+# erreurs définitives (clé invalide, requête malformée...) qu'il ne sert à
+# rien de retenter.
+_RETRYABLE_ERRORS = (genai_errors.ServerError, httpx.TimeoutException)
 
 ATTESTATION_LABELS = {
     "employeur": "AttestationEmployeur",
@@ -109,20 +118,20 @@ def identify_documents(page_texts: list[str], client: genai.Client) -> list[Extr
     )
 
     response = None
-    last_error: genai_errors.ServerError | None = None
+    last_error: Exception | None = None
     for delay in (0,) + RETRY_DELAYS:
         if delay:
             time.sleep(delay)
         try:
             response = client.models.generate_content(model=MODEL, contents=prompt, config=config)
             break
-        except genai_errors.ServerError as exc:
+        except _RETRYABLE_ERRORS as exc:
             last_error = exc
 
     if response is None:
         raise ProcessingError(
-            "Le serveur Gemini est actuellement surchargé (forte demande) et n'a pas "
-            "répondu après plusieurs tentatives. Réessaie dans quelques minutes."
+            "Le serveur Gemini est actuellement surchargé ou ne répond pas, "
+            "même après plusieurs tentatives. Réessaie dans quelques minutes."
         ) from last_error
 
     text = response.text
