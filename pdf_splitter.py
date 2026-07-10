@@ -27,9 +27,14 @@ from pypdf import PdfReader, PdfWriter
 # récent) : on reste donc sur gemini-3.5-flash, gratuit et à jour.
 MODEL = "gemini-3.5-flash"
 
+# Modèle de secours, utilisé si MODEL reste indisponible après toutes ses
+# tentatives (souvent moins sollicité, donc plus de chances d'aboutir).
+FALLBACK_MODEL = "gemini-3.1-flash-lite"
+
 # Délais (secondes) avant chaque nouvelle tentative en cas de surcharge
 # temporaire ou de non-réponse du serveur Gemini.
 RETRY_DELAYS = (5, 15, 30)
+FALLBACK_RETRY_DELAYS = (5, 15)
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -43,6 +48,37 @@ def _is_retryable(exc: Exception) -> bool:
     if isinstance(exc, genai_errors.ClientError) and getattr(exc, "code", None) == 499:
         return True
     return False
+
+
+class _AllRetriesFailed(Exception):
+    """Levée en interne quand un modèle a épuisé toutes ses tentatives."""
+
+    def __init__(self, last_error: Exception | None) -> None:
+        super().__init__(str(last_error))
+        self.last_error = last_error
+
+
+def _generate_with_retries(
+    client: genai.Client,
+    model: str,
+    prompt: str,
+    config: types.GenerateContentConfig,
+    delays: tuple[int, ...],
+):
+    last_error: Exception | None = None
+    for delay in (0,) + delays:
+        if delay:
+            time.sleep(delay)
+        try:
+            return client.models.generate_content(model=model, contents=prompt, config=config)
+        except genai_errors.APIError as exc:
+            if not _is_retryable(exc):
+                raise
+            last_error = exc
+        except httpx.TimeoutException as exc:
+            last_error = exc
+    raise _AllRetriesFailed(last_error)
+
 
 ATTESTATION_LABELS = {
     "employeur": "AttestationEmployeur",
@@ -125,26 +161,19 @@ def identify_documents(page_texts: list[str], client: genai.Client) -> list[Extr
         max_output_tokens=16384,
     )
 
-    response = None
-    last_error: Exception | None = None
-    for delay in (0,) + RETRY_DELAYS:
-        if delay:
-            time.sleep(delay)
+    try:
+        response = _generate_with_retries(client, MODEL, prompt, config, RETRY_DELAYS)
+    except _AllRetriesFailed as primary_failure:
         try:
-            response = client.models.generate_content(model=MODEL, contents=prompt, config=config)
-            break
-        except genai_errors.APIError as exc:
-            if not _is_retryable(exc):
-                raise
-            last_error = exc
-        except httpx.TimeoutException as exc:
-            last_error = exc
-
-    if response is None:
-        raise ProcessingError(
-            "Le serveur Gemini est actuellement surchargé ou ne répond pas, "
-            "même après plusieurs tentatives. Réessaie dans quelques minutes."
-        ) from last_error
+            response = _generate_with_retries(
+                client, FALLBACK_MODEL, prompt, config, FALLBACK_RETRY_DELAYS
+            )
+        except _AllRetriesFailed as fallback_failure:
+            raise ProcessingError(
+                "Le serveur Gemini est actuellement surchargé ou ne répond pas, "
+                "même après plusieurs tentatives sur deux modèles différents. "
+                "Réessaie dans quelques minutes."
+            ) from fallback_failure.last_error
 
     text = response.text
     if not text:
