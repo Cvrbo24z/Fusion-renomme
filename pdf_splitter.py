@@ -31,10 +31,18 @@ MODEL = "gemini-3.5-flash"
 # temporaire ou de non-réponse du serveur Gemini.
 RETRY_DELAYS = (5, 15, 30)
 
-# Erreurs considérées comme transitoires (on retente), par opposition aux
-# erreurs définitives (clé invalide, requête malformée...) qu'il ne sert à
-# rien de retenter.
-_RETRYABLE_ERRORS = (genai_errors.ServerError, httpx.TimeoutException)
+
+def _is_retryable(exc: Exception) -> bool:
+    """Erreurs transitoires (on retente) vs. définitives (clé invalide,
+    modèle introuvable...) qu'il ne sert à rien de retenter."""
+    if isinstance(exc, (genai_errors.ServerError, httpx.TimeoutException)):
+        return True
+    # 499 CANCELLED : la requête a été interrompue avant la fin (ex : notre
+    # propre timeout HTTP a coupé la connexion pendant que Gemini
+    # travaillait encore) — c'est transitoire, pas une erreur de requête.
+    if isinstance(exc, genai_errors.ClientError) and getattr(exc, "code", None) == 499:
+        return True
+    return False
 
 ATTESTATION_LABELS = {
     "employeur": "AttestationEmployeur",
@@ -125,7 +133,11 @@ def identify_documents(page_texts: list[str], client: genai.Client) -> list[Extr
         try:
             response = client.models.generate_content(model=MODEL, contents=prompt, config=config)
             break
-        except _RETRYABLE_ERRORS as exc:
+        except genai_errors.APIError as exc:
+            if not _is_retryable(exc):
+                raise
+            last_error = exc
+        except httpx.TimeoutException as exc:
             last_error = exc
 
     if response is None:
