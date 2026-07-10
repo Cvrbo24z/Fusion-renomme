@@ -22,10 +22,10 @@ from google.genai import errors as genai_errors
 from google.genai import types
 from pypdf import PdfReader, PdfWriter
 
-# gemini-2.5-flash est un modèle plus établi (donc moins souvent en
-# surcapacité) que les modèles "3.x" plus récents, tout en restant éligible
-# à l'offre gratuite.
-MODEL = "gemini-2.5-flash"
+# gemini-2.5-flash n'est plus disponible pour les nouveaux comptes API
+# Google (l'API renvoie une 404 les invitant à utiliser un modèle plus
+# récent) : on reste donc sur gemini-3.5-flash, gratuit et à jour.
+MODEL = "gemini-3.5-flash"
 
 # Délais (secondes) avant chaque nouvelle tentative en cas de surcharge
 # temporaire ou de non-réponse du serveur Gemini.
