@@ -71,10 +71,11 @@ if process_clicked:
     # Par défaut, la librairie Google désactive le délai d'expiration des
     # requêtes HTTP (elle peut rester bloquée indéfiniment si le serveur
     # Gemini est surchargé sans jamais répondre) : on fixe une limite de
-    # 60 secondes par tentative pour éviter tout blocage infini.
+    # 3 minutes par tentative — assez pour un gros PDF, mais borné pour
+    # éviter tout blocage infini.
     client = genai.Client(
         api_key=api_key,
-        http_options=genai_types.HttpOptions(timeout=60_000),
+        http_options=genai_types.HttpOptions(timeout=180_000),
     )
     jobs = []
     if employeur_file is not None:
