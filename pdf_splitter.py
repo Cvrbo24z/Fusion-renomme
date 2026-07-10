@@ -37,25 +37,14 @@ RETRY_DELAYS = (5, 15, 30)
 FALLBACK_RETRY_DELAYS = (5, 15)
 
 
-def _is_retryable(exc: Exception) -> bool:
-    """Erreurs transitoires (on retente) vs. définitives (clé invalide,
-    modèle introuvable...) qu'il ne sert à rien de retenter."""
-    if isinstance(exc, (genai_errors.ServerError, httpx.TimeoutException)):
-        return True
-    # 499 CANCELLED : la requête a été interrompue avant la fin (ex : notre
-    # propre timeout HTTP a coupé la connexion pendant que Gemini
-    # travaillait encore) — c'est transitoire, pas une erreur de requête.
-    if isinstance(exc, genai_errors.ClientError) and getattr(exc, "code", None) == 499:
-        return True
-    return False
+class _ModelUnavailable(Exception):
+    """Levée en interne quand un modèle donné doit être abandonné (quota
+    quotidien épuisé, ou toutes les tentatives de nouvelle connexion ont
+    échoué) — signal pour basculer sur le modèle de secours."""
 
-
-class _AllRetriesFailed(Exception):
-    """Levée en interne quand un modèle a épuisé toutes ses tentatives."""
-
-    def __init__(self, last_error: Exception | None) -> None:
-        super().__init__(str(last_error))
-        self.last_error = last_error
+    def __init__(self, cause: Exception | None) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
 
 
 def _generate_with_retries(
@@ -71,13 +60,26 @@ def _generate_with_retries(
             time.sleep(delay)
         try:
             return client.models.generate_content(model=model, contents=prompt, config=config)
-        except genai_errors.APIError as exc:
-            if not _is_retryable(exc):
+        except genai_errors.ClientError as exc:
+            code = getattr(exc, "code", None)
+            if code == 429:
+                # Quota gratuit quotidien épuisé pour CE modèle précis :
+                # attendre ne sert à rien, on bascule tout de suite sur le
+                # modèle de secours (qui a son propre quota séparé).
+                raise _ModelUnavailable(exc) from exc
+            if code != 499:
+                # Erreur définitive (requête invalide, modèle introuvable...) :
+                # ni la nouvelle tentative ni le changement de modèle n'y feront rien.
                 raise
+            # 499 CANCELLED : la requête a été interrompue avant la fin (ex :
+            # notre propre timeout HTTP a coupé la connexion pendant que
+            # Gemini travaillait encore) — transitoire, on retente ce modèle.
+            last_error = exc
+        except genai_errors.ServerError as exc:
             last_error = exc
         except httpx.TimeoutException as exc:
             last_error = exc
-    raise _AllRetriesFailed(last_error)
+    raise _ModelUnavailable(last_error)
 
 
 ATTESTATION_LABELS = {
@@ -163,17 +165,17 @@ def identify_documents(page_texts: list[str], client: genai.Client) -> list[Extr
 
     try:
         response = _generate_with_retries(client, MODEL, prompt, config, RETRY_DELAYS)
-    except _AllRetriesFailed as primary_failure:
+    except _ModelUnavailable:
         try:
             response = _generate_with_retries(
                 client, FALLBACK_MODEL, prompt, config, FALLBACK_RETRY_DELAYS
             )
-        except _AllRetriesFailed as fallback_failure:
+        except _ModelUnavailable as fallback_failure:
             raise ProcessingError(
-                "Le serveur Gemini est actuellement surchargé ou ne répond pas, "
-                "même après plusieurs tentatives sur deux modèles différents. "
-                "Réessaie dans quelques minutes."
-            ) from fallback_failure.last_error
+                "Gemini est surchargé, ou le quota gratuit quotidien est atteint "
+                "pour les deux modèles disponibles. Réessaie plus tard (le quota "
+                "se réinitialise chaque jour)."
+            ) from fallback_failure.cause
 
     text = response.text
     if not text:
