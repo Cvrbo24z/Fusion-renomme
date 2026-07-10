@@ -26,9 +26,9 @@ from google.genai import errors as genai_errors
 
 from pdf_splitter import ProcessingError, process_pdf
 
-st.set_page_config(page_title="Fusion-renomme", page_icon="📄")
+st.set_page_config(page_title="CvrboTraining", page_icon="📄")
 
-st.title("📄 Fusion-renomme")
+st.title("📄 CvrboTraining")
 st.caption(
     "Divise un PDF de publipostage (ex : attestations de formation) en un fichier "
     "par personne, renommé automatiquement NOM_Prenom_Attestation....pdf"
