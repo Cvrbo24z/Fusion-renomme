@@ -32,9 +32,12 @@ MODEL = "gemini-3.5-flash"
 FALLBACK_MODEL = "gemini-3.1-flash-lite"
 
 # Délais (secondes) avant chaque nouvelle tentative en cas de surcharge
-# temporaire ou de non-réponse du serveur Gemini.
-RETRY_DELAYS = (5, 15, 30)
-FALLBACK_RETRY_DELAYS = (5, 15)
+# temporaire ou de non-réponse du serveur Gemini. Volontairement courts :
+# avec 2 modèles disponibles, on préfère basculer vite sur le secours
+# plutôt que de multiplier les tentatives sur un modèle qui ne répond pas
+# (le temps d'attente total, pire cas, reste ainsi borné à quelques minutes).
+RETRY_DELAYS = (5, 15)
+FALLBACK_RETRY_DELAYS = (10,)
 
 
 class _ModelUnavailable(Exception):
@@ -53,11 +56,17 @@ def _generate_with_retries(
     prompt: str,
     config: types.GenerateContentConfig,
     delays: tuple[int, ...],
+    on_progress=None,
 ):
+    total_attempts = len(delays) + 1
     last_error: Exception | None = None
-    for delay in (0,) + delays:
+    for attempt, delay in enumerate((0,) + delays, start=1):
         if delay:
+            if on_progress:
+                on_progress(f"Nouvelle tentative dans {delay}s...")
             time.sleep(delay)
+        if on_progress:
+            on_progress(f"Tentative {attempt}/{total_attempts} avec {model}...")
         try:
             return client.models.generate_content(model=model, contents=prompt, config=config)
         except genai_errors.ClientError as exc:
@@ -146,7 +155,9 @@ def _build_prompt(page_texts: list[str]) -> str:
     return "\n\n".join(parts)
 
 
-def identify_documents(page_texts: list[str], client: genai.Client) -> list[ExtractedDocument]:
+def identify_documents(
+    page_texts: list[str], client: genai.Client, on_progress=None
+) -> list[ExtractedDocument]:
     if not page_texts:
         raise ProcessingError("Le PDF ne contient aucune page.")
     if not any(page_texts):
@@ -164,11 +175,13 @@ def identify_documents(page_texts: list[str], client: genai.Client) -> list[Extr
     )
 
     try:
-        response = _generate_with_retries(client, MODEL, prompt, config, RETRY_DELAYS)
+        response = _generate_with_retries(client, MODEL, prompt, config, RETRY_DELAYS, on_progress)
     except _ModelUnavailable:
+        if on_progress:
+            on_progress(f"Bascule sur le modèle de secours ({FALLBACK_MODEL})...")
         try:
             response = _generate_with_retries(
-                client, FALLBACK_MODEL, prompt, config, FALLBACK_RETRY_DELAYS
+                client, FALLBACK_MODEL, prompt, config, FALLBACK_RETRY_DELAYS, on_progress
             )
         except _ModelUnavailable as fallback_failure:
             raise ProcessingError(
@@ -311,8 +324,10 @@ def merge_matching_attestations(
     return results
 
 
-def process_pdf(pdf_bytes: bytes, attestation_type: str, client: genai.Client) -> list[SplitFile]:
+def process_pdf(
+    pdf_bytes: bytes, attestation_type: str, client: genai.Client, on_progress=None
+) -> list[SplitFile]:
     """Découpe et renomme un PDF de publipostage. `attestation_type` est 'employeur' ou 'of'."""
     page_texts = extract_page_texts(pdf_bytes)
-    documents = identify_documents(page_texts, client)
+    documents = identify_documents(page_texts, client, on_progress)
     return split_pdf(pdf_bytes, documents, attestation_type)

@@ -71,11 +71,11 @@ if process_clicked:
     # Par défaut, la librairie Google désactive le délai d'expiration des
     # requêtes HTTP (elle peut rester bloquée indéfiniment si le serveur
     # Gemini est surchargé sans jamais répondre) : on fixe une limite de
-    # 3 minutes par tentative — assez pour un gros PDF, mais borné pour
-    # éviter tout blocage infini.
+    # 60 secondes par tentative, pour garder un temps d'attente total
+    # raisonnable même en cumulant les tentatives et le modèle de secours.
     client = genai.Client(
         api_key=api_key,
-        http_options=genai_types.HttpOptions(timeout=180_000),
+        http_options=genai_types.HttpOptions(timeout=60_000),
     )
     jobs = []
     if employeur_file is not None:
@@ -86,20 +86,28 @@ if process_clicked:
     results_by_type: dict[str, list[SplitFile]] = {}
 
     for attestation_type, uploaded_file, label in jobs:
-        with st.spinner(f"Analyse des {label} en cours (cela peut prendre un moment)..."):
+        with st.status(f"Analyse des {label} en cours...", expanded=True) as status:
+            on_progress = lambda msg: status.write(msg)  # noqa: E731
             try:
-                outputs = process_pdf(uploaded_file.getvalue(), attestation_type, client)
+                outputs = process_pdf(
+                    uploaded_file.getvalue(), attestation_type, client, on_progress
+                )
             except ProcessingError as exc:
+                status.update(label=f"{label} : erreur", state="error")
                 st.error(f"{label} : {exc}")
                 continue
             except genai_errors.APIError as exc:
+                status.update(label=f"{label} : erreur", state="error")
                 st.error(f"{label} : erreur de l'API Gemini.")
                 st.exception(exc)
                 continue
             except Exception as exc:  # noqa: BLE001
+                status.update(label=f"{label} : erreur", state="error")
                 st.error(f"{label} : erreur inattendue.")
                 st.exception(exc)
                 continue
+
+            status.update(label=f"{label} : terminé", state="complete")
 
         st.success(f"{label} : {len(outputs)} attestation(s) générée(s).")
         results_by_type[attestation_type] = outputs
