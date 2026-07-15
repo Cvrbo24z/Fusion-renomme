@@ -25,7 +25,7 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
-from pdf_splitter import ProcessingError, process_pdf
+from pdf_splitter import ProcessingError, SplitFile, merge_matching_attestations, process_pdf
 
 st.set_page_config(page_title="CvrboTraining", page_icon="📄")
 
@@ -83,7 +83,7 @@ if process_clicked:
     if of_file is not None:
         jobs.append(("of", of_file, "Attestations OF"))
 
-    all_outputs: list[tuple[str, bytes]] = []
+    results_by_type: dict[str, list[SplitFile]] = {}
 
     for attestation_type, uploaded_file, label in jobs:
         with st.spinner(f"Analyse des {label} en cours (cela peut prendre un moment)..."):
@@ -102,7 +102,16 @@ if process_clicked:
                 continue
 
         st.success(f"{label} : {len(outputs)} attestation(s) générée(s).")
-        all_outputs.extend(outputs)
+        results_by_type[attestation_type] = outputs
+
+    if "employeur" in results_by_type and "of" in results_by_type:
+        all_outputs = merge_matching_attestations(
+            results_by_type["employeur"], results_by_type["of"]
+        )
+    else:
+        all_outputs = [
+            (f.filename, f.data) for files in results_by_type.values() for f in files
+        ]
 
     if all_outputs:
         st.subheader("2. Résultats")

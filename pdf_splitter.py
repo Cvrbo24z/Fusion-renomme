@@ -222,16 +222,30 @@ def format_prenom(raw: str) -> str:
     return "-".join(t.capitalize() for t in tokens) or "Inconnu"
 
 
+@dataclass
+class SplitFile:
+    nom: str  # déjà normalisé (format_nom)
+    prenom: str  # déjà normalisé (format_prenom)
+    filename: str
+    data: bytes
+
+
+def _next_filename(used_names: dict[str, int], base_name: str) -> str:
+    count = used_names.get(base_name, 0)
+    used_names[base_name] = count + 1
+    return f"{base_name}.pdf" if count == 0 else f"{base_name}_{count + 1}.pdf"
+
+
 def split_pdf(
     pdf_bytes: bytes,
     documents: list[ExtractedDocument],
     attestation_type: str,
-) -> list[tuple[str, bytes]]:
+) -> list[SplitFile]:
     reader = PdfReader(io.BytesIO(pdf_bytes))
     total_pages = len(reader.pages)
     label = ATTESTATION_LABELS[attestation_type]
     used_names: dict[str, int] = {}
-    results: list[tuple[str, bytes]] = []
+    results: list[SplitFile] = []
 
     for doc in documents:
         start = max(1, doc.start_page)
@@ -243,19 +257,61 @@ def split_pdf(
         for page_index in range(start - 1, end):
             writer.add_page(reader.pages[page_index])
 
-        base_name = f"{format_nom(doc.nom)}_{format_prenom(doc.prenom)}_{label}"
-        count = used_names.get(base_name, 0)
-        used_names[base_name] = count + 1
-        filename = f"{base_name}.pdf" if count == 0 else f"{base_name}_{count + 1}.pdf"
+        nom = format_nom(doc.nom)
+        prenom = format_prenom(doc.prenom)
+        filename = _next_filename(used_names, f"{nom}_{prenom}_{label}")
 
         buffer = io.BytesIO()
         writer.write(buffer)
-        results.append((filename, buffer.getvalue()))
+        results.append(SplitFile(nom=nom, prenom=prenom, filename=filename, data=buffer.getvalue()))
 
     return results
 
 
-def process_pdf(pdf_bytes: bytes, attestation_type: str, client: genai.Client) -> list[tuple[str, bytes]]:
+def merge_matching_attestations(
+    employeur_files: list[SplitFile],
+    of_files: list[SplitFile],
+) -> list[tuple[str, bytes]]:
+    """Fusionne en un seul fichier les attestations Employeur et OF d'une
+    même personne (NOM_Prenom_AttestationsFormation.pdf). Les personnes
+    présentes dans un seul des deux jeux de fichiers restent inchangées."""
+    of_by_key: dict[tuple[str, str], list[SplitFile]] = {}
+    for f in of_files:
+        of_by_key.setdefault((f.nom, f.prenom), []).append(f)
+
+    used_names: dict[str, int] = {}
+    matched_of_ids: set[int] = set()
+    results: list[tuple[str, bytes]] = []
+
+    for emp in employeur_files:
+        candidates = of_by_key.get((emp.nom, emp.prenom), [])
+        match = next((c for c in candidates if id(c) not in matched_of_ids), None)
+
+        if match is None:
+            results.append((emp.filename, emp.data))
+            continue
+
+        matched_of_ids.add(id(match))
+        writer = PdfWriter()
+        for source_bytes in (emp.data, match.data):
+            reader = PdfReader(io.BytesIO(source_bytes))
+            for page in reader.pages:
+                writer.add_page(page)
+
+        filename = _next_filename(used_names, f"{emp.nom}_{emp.prenom}_AttestationsFormation")
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        results.append((filename, buffer.getvalue()))
+
+    # Fichiers OF sans équivalent Employeur : restent individuels.
+    for of in of_files:
+        if id(of) not in matched_of_ids:
+            results.append((of.filename, of.data))
+
+    return results
+
+
+def process_pdf(pdf_bytes: bytes, attestation_type: str, client: genai.Client) -> list[SplitFile]:
     """Découpe et renomme un PDF de publipostage. `attestation_type` est 'employeur' ou 'of'."""
     page_texts = extract_page_texts(pdf_bytes)
     documents = identify_documents(page_texts, client)
